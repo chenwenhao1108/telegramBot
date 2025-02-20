@@ -51,7 +51,7 @@ for article in q.execQuery(er, maxItems=30):
     title = translate_to_chinese(article["title"])
     date = article["date"] + " " + article["time"] # **if the task requests within recent 1 hour, you should filter the articles according to the article["date"] + " " + article["time"]**
     url = article["url"]
-    lang = article["lang"]
+    lang = article["lang"] # Please translate the ISO 639-2 language code into Chinese, for example: lang = "eng" should be translated as lang = "英语"
     source = article["source"]["title"]
     summary = summarize_in_chinese(article["body"])
     output = f"# {title}\n- 日期：{date}\n- 语言：{lang}\n- 来源：{source}\n- 链接：{url}\n- 摘要：{summary}"
