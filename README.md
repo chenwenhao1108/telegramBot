@@ -1,0 +1,2 @@
+Usage: 
+bash start.sh
