@@ -176,6 +176,10 @@ class TelegramBotService:
                         await update.message.reply_text("未找到相关新闻，请尝试换个话题或拉长时间间隔")
                         return
                     continue
+                
+                if isinstance(news_items, str):
+                    await update.message.reply_text(news_items)
+                    return
 
                 await update.message.reply_text(f'获取到了{len(news_items)}条新闻')
                 
