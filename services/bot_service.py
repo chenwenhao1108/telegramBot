@@ -168,7 +168,7 @@ class TelegramBotService:
             try:
                 news_items = self.news_service.get_news(
                     query,
-                    date=datetime.now().strftime("%Y-%m-%d")
+                    date=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     )
 
                 if not news_items:
