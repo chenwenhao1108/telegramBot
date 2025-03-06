@@ -8,6 +8,7 @@ dependencies = [
     "apify-client==1.8.1",
     "eventregistry>=9.1",
     "openai==1.61.1",
+    "pysocks>=1.7.1",
     "python-telegram-bot==21.10",
     "requests==2.32.3",
     "smolagents==1.7.0",

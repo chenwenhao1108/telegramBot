@@ -69,6 +69,7 @@ dependencies = [
     { name = "apify-client" },
     { name = "eventregistry" },
     { name = "openai" },
+    { name = "pysocks" },
     { name = "python-telegram-bot" },
     { name = "requests" },
     { name = "smolagents" },
@@ -80,6 +81,7 @@ requires-dist = [
     { name = "apify-client", specifier = "==1.8.1" },
     { name = "eventregistry", specifier = ">=9.1" },
     { name = "openai", specifier = "==1.61.1" },
+    { name = "pysocks", specifier = ">=1.7.1" },
     { name = "python-telegram-bot", specifier = "==21.10" },
     { name = "requests", specifier = "==2.32.3" },
     { name = "smolagents", specifier = "==1.7.0" },
@@ -666,6 +668,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7c/2d/c3338d48ea6cc0feb8446d8e6937e1408088a72a39937982cc6111d17f84/pygments-2.19.1.tar.gz", hash = "sha256:61c16d2a8576dc0649d9f39e089b5f02bcd27fba10d8fb4dcc28173f7a45151f", size = 4968581 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8a/0b/9fcc47d19c48b59121088dd6da2488a49d5f72dacf8262e2790a1d2c7d15/pygments-2.19.1-py3-none-any.whl", hash = "sha256:9ea1544ad55cecf4b8242fab6dd35a93bbce657034b0611ee383099054ab6d8c", size = 1225293 },
+]
+
+[[package]]
+name = "pysocks"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/11/293dd436aea955d45fc4e8a35b6ae7270f5b8e00b53cf6c024c83b657a11/PySocks-1.7.1.tar.gz", hash = "sha256:3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0", size = 284429 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/59/b4572118e098ac8e46e399a1dd0f2d85403ce8bbaad9ec79373ed6badaf9/PySocks-1.7.1-py3-none-any.whl", hash = "sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5", size = 16725 },
 ]
 
 [[package]]
