@@ -224,7 +224,7 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     # server bot:
-    # application = Application.builder().token("8029538453:AAGX6ZGOPxMQheOQorljGKEai32iYkAyV-A").build()
+    # application = Application.builder().token("").build()
     
     # local test bot:
     application = Application.builder().token("").build()
