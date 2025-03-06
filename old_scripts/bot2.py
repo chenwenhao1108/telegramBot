@@ -227,7 +227,7 @@ def main():
     # application = Application.builder().token("8029538453:AAGX6ZGOPxMQheOQorljGKEai32iYkAyV-A").build()
     
     # local test bot:
-    application = Application.builder().token("7985592178:AAGDhjZSRDTEvrfuZNa3lVYBwyfbqb9c4yU").build()
+    application = Application.builder().token("").build()
 
     # 添加命令处理器
     application.add_handler(CommandHandler("start", start))

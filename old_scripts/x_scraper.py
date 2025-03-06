@@ -181,7 +181,7 @@ class XScraper:
 
 async def main():
     # 1. Initialize Apify Configuration
-    apify_config = ApifyConfig(api_token="apify_api_WQPEHWusVWXt5wSJd2SzSLoDZDDvMf4jqVW2") # You can pass API token and actor name here if needed
+    apify_config = ApifyConfig(api_token="") # You can pass API token and actor name here if needed
 
     # 2. Initialize Apify Service
     apify_service = ApifyService(apify_config)
