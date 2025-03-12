@@ -628,7 +628,7 @@ class TelegramBotService:
                                     logger.error(f"Error removing temporary file {file_path}: {e}")
                         
             
-            logger.info(f"Message forwarded from {source_chat} ({group_name}) to {target_chat}")
+                    logger.info(f"Message forwarded from {source_chat} ({group_name}) to {target_chat}")
             
                 except Exception as e:
                     logger.error(f"Error forwarding message via Telethon: {e}")
