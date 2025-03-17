@@ -21,17 +21,20 @@ class Settings:
         logging.getLogger('httpx').setLevel(logging.WARNING)
         
         # Telegram Bot Configuration
-        self.telegram_token: str = os.environ.get('TELEGRAM_TOKEN')
-        if not self.telegram_token:
-            self.logger.warning("TELEGRAM_TOKEN not set in environment variables")
+        self.query_bot_token: str = os.environ.get('QUERY_BOT_TOKEN')
+        self.forward_bot_token: str = os.environ.get('FORWARD_BOT_TOKEN')
+        if not self.query_bot_token:
+            self.logger.warning("QUERY_BOT_TOKEN not set in environment variables")
+        if not self.forward_bot_token:
+            self.logger.warning("FORWARD_BOT_TOKEN not set in environment variables")
         
         # Telegram API Configuration for Telethon
         self.telegram_api_id: int = int(os.environ.get('TELEGRAM_API_ID', 0))
         self.telegram_api_hash: str = os.environ.get('TELEGRAM_API_HASH', '')
         self.telegram_session_string: str = os.environ.get('TELEGRAM_SESSION_STRING', '')
         
-        if not self.telegram_api_id or not self.telegram_api_hash:
-            self.logger.warning("TELEGRAM_API_ID or TELEGRAM_API_HASH not set in environment variables")
+        if not self.telegram_api_id or not self.telegram_api_hash or not self.telegram_session_string:
+            self.logger.warning("TELEGRAM_API_ID or TELEGRAM_API_HASH or TELEGRAM_SESSION_STRING not set in environment variables")
         
         # OpenAI Configuration
         self.openai_api_key: str = os.environ.get('OPENAI_API_KEY')

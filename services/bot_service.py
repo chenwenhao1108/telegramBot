@@ -8,7 +8,10 @@ import telegram
 from config.settings import settings
 from services.news_service import NewsService
 from services.x_service import ApifyConfig, ApifyService, XScraper
-from utils.utils import parse_query, analyze_content, read_tweets_ids, summarize_tweets, write_tweets_ids
+from utils.utils import parse_query, analyze_content, read_tweets_ids, summarize_tweets, write_tweets_ids, analyze_message
+
+import os
+import json
 
 # 导入Telethon相关库
 from telethon import TelegramClient, events
@@ -19,31 +22,39 @@ logger = settings.get_logger(__name__)
 
 class TelegramBotService:
     """Service class for Telegram bot operations."""
-    def __init__(self, token: str):
+    def __init__(self, token: str, bot_type: str, start_message: str):
         self.news_service = NewsService()
-        self.start_message = """
-    您好！我是一个新闻搜索 Bot！
-    您可以输入以下指令进行使用：
-
-    输入 /news [查询句] 来查询新闻，例如：/news 最近的体育新闻
-    输入 /twitter_search [查询句] 来查询推特，例如：/twitter 最近的中国AI新闻
-    输入 /twitter_user [user id] 来查询推特用户，例如：/twitter_user elonmusk （请注意user id不是user name）
-    输入 /hourly [news/twitter] [特朗普/elonmusk]来设置定时推送新闻或twitter用户推文，例如："/hourly news 特朗普" 或"/hourly /twitter elonmusk"
-    输入 /stop [news/twitter] 来停止定时推送
-
-    消息转发功能：
-    输入 /forward_new [源群组ID/用户名/邀请链接] 来设置消息转发
-    输入 /get_history [源群组ID/用户名/邀请链接] [查询句] 来获取并分析历史消息
-    输入 /list_forwards 来查看当前正在监听的群组
-    输入 /stop_forward [群组ID/all] 来停止转发
-    """
+        self.start_message = start_message
+        self.bot_type = bot_type
         self.token = token
         # Telethon客户端
         self.telethon_client = None
-        # 转发配置 - 改为列表，支持多群组
-        self.forward_configs = []
+        # 转发配置文件路径
+        self.config_file = "./forward_configs.json"
+        # 转发配置列表
+        self.forward_configs = self.load_forward_configs()
         # 消息处理器字典，用于管理和移除
         self.message_handlers = {}
+        
+    def load_forward_configs(self) -> list:
+        """从JSON文件加载转发配置"""
+        try:
+            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.error(f"加载转发配置文件失败: {e}")
+        return []
+
+    def save_forward_configs(self):
+        """保存转发配置到JSON文件"""
+        try:
+            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(self.forward_configs, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"保存转发配置文件失败: {e}")
 
     async def initialize_x_service(self) -> Optional[XScraper]:
         """Initialize X (Twitter) scraping service."""
@@ -597,7 +608,15 @@ class TelegramBotService:
                     
                     # 通过机器人API发送到目标群组
                     if message.text:
-                        text = f"📨 来自 \"{group_name}\" 的消息:\n\n{message.text}"
+                        analysis = await analyze_message(message=message.text)
+                        
+                        if not analysis.get('is_illegal_comment', False):
+                            logger.info(f"消息内容无风险，消息内容: {message.text}，分析结果: {analysis}")
+                            return
+                        
+                        text = f"""⚠️ 来自 \"{group_name}\" 的非法消息:
+                        \n\n原因：\n{analysis.get('reason', '该消息表达了非法内容')}
+                        \n\n原文：\n{message.text}"""
                         await context.bot.send_message(
                             chat_id=target_chat,
                             text=text
@@ -643,6 +662,8 @@ class TelegramBotService:
             self.forward_configs.append(config)
             self.message_handlers[config_id] = forward_handler
             
+            # 在成功设置转发后，保存配置
+            self.save_forward_configs()
             await update.message.reply_text(f'✅ 已设置转发 "{group_name}" 的新消息到当前群组')
             logger.info(f"Message forwarding set up from {source_chat} ({group_name}) to {target_chat}")
             
@@ -920,7 +941,9 @@ class TelegramBotService:
                 
                 # 从配置列表中移除
                 self.forward_configs.remove(config)
-            
+
+            # 保存配置
+            self.save_forward_configs()
             await update.message.reply_text(f'✅ 已停止所有群组的消息转发（共 {len(configs_to_remove)} 个）')
             logger.info(f"Stopped all {len(configs_to_remove)} message forwardings for chat {target_chat}")
             return
@@ -954,6 +977,7 @@ class TelegramBotService:
             # 从配置列表中移除
             self.forward_configs.remove(config_to_remove)
             
+            self.save_forward_configs()
             await update.message.reply_text(f'✅ 已停止转发 "{config_to_remove["group_name"]}" 的消息')
             logger.info(f"Stopped message forwarding from {config_to_remove['source_chat']} to {target_chat}")
             
@@ -961,28 +985,38 @@ class TelegramBotService:
             logger.error(f"Error stopping message forwarding: {e}")
             await update.message.reply_text(f'❌ 停止消息转发时出错: {str(e)}')
     
-    def run(self):
+    def run(self, shutdown_event=None):
         """Start the Telegram bot."""
         try:
             # 创建应用实例
             application = Application.builder().token(self.token).concurrent_updates(True).build()
+
+            if self.bot_type == 'query':
+                # Add query command handlers
+                application.add_handler(CommandHandler("start", self.start))
+                application.add_handler(CommandHandler("news", self.news_command))
+                application.add_handler(CommandHandler("twitter_search", self.twitter_search_command))
+                application.add_handler(CommandHandler("twitter_user", self.twitter_user_command))
+                application.add_handler(CommandHandler("hourly", self.hourly))
+                application.add_handler(CommandHandler("stop", self.stop_hourly))
+                application.add_handler(CommandHandler("get_history", self.get_history))
+            elif self.bot_type == 'forward':
+                # Add forward command handlers
+                application.add_handler(CommandHandler("start", self.start))
+                application.add_handler(CommandHandler("forward_new", self.forward_new))
+                application.add_handler(CommandHandler("list_forwards", self.list_forwards))
+                application.add_handler(CommandHandler("stop_forward", self.stop_forward))
     
-            # Add command handlers
-            application.add_handler(CommandHandler("start", self.start))
-            application.add_handler(CommandHandler("news", self.news_command))
-            application.add_handler(CommandHandler("twitter_search", self.twitter_search_command))
-            application.add_handler(CommandHandler("twitter_user", self.twitter_user_command))
-            application.add_handler(CommandHandler("hourly", self.hourly))
-            application.add_handler(CommandHandler("stop", self.stop_hourly))
+            logger.info(f"Starting {self.bot_type.upper()} Telegram bot...")
             
-            # 添加消息转发相关的命令处理器
-            application.add_handler(CommandHandler("forward_new", self.forward_new))
-            application.add_handler(CommandHandler("get_history", self.get_history))
-            application.add_handler(CommandHandler("list_forwards", self.list_forwards))
-            application.add_handler(CommandHandler("stop_forward", self.stop_forward))
-    
-            logger.info("Starting Telegram bot...")
-            application.run_polling()
+                        # 如果提供了shutdown_event，使用它来控制机器人运行
+            if shutdown_event:
+                application.run_polling(stop_signals=None, close_loop=False)
+                while not shutdown_event.is_set():
+                    time.sleep(1)
+                application.stop()
+            else:
+                application.run_polling()
     
         except Exception as e:
             logger.error(f"Failed to start Telegram bot: {e}")

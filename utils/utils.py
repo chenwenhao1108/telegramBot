@@ -357,3 +357,28 @@ def write_tweets_ids(ids):
     with open("tweets_ids.txt", "w") as f:
         json.dump(ids, f)
         return
+    
+async def analyze_message(message: str) -> dict:
+    """Analyze telegram group message"""
+    prompt = f"""下面是一条telegram群组消息，请分析这条消息表达的含义，判断该条消息是否符合下面三种情况之一：
+    1. 是否是有关于**中国领导人**的负面评论（如关于习近平或其他中国领导人的评论）
+    2. 是否表示要进行非法活动（如：我要炸车站，我要挂横幅，我要去抗议）
+    3. 他国政要涉及中国的观点和新政策（如：赖清德涉华观点）
+    
+    请根据上述情况，判断该消息是否是舆情风险信息，并以json格式返回判断结果。
+    **请严格按照下面json格式返回，不要返回任何多余内容或注释**
+    {{
+        "is_illegal_comment": true 或 false, // 是否是非法评论, 如果符合上述情况之一则返回true，否则返回false
+        "reason": "对该消息内容的总结，以及判断该条消息是否为舆情风险信息的原因",
+    }}
+    
+    Telegram group message：
+    {message}
+    """
+    
+    openai_service = OpenAIService()
+    
+    return openai_service.infer(
+        user_prompt=prompt,
+        system_prompt="你是一个专业的舆情与非法信息监控师，能够准确的分析消息内容，判断该消息是否是舆情风险信息。"
+    )
