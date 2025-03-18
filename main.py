@@ -59,7 +59,7 @@ def main():
     输入 /stop_forward [群组ID/all] 来停止转发""")
 
         # 创建并启动两个线程
-        # query_thread = threading.Thread(target=run_bot, args=(query_bot,), name="QueryBot")
+        query_thread = threading.Thread(target=run_bot, args=(query_bot,), name="QueryBot")
         forward_thread = threading.Thread(target=run_bot, args=(forward_bot,), name="ForwardBot")
 
         query_thread.daemon = True  # 设置为守护线程
