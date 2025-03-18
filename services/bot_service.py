@@ -10,6 +10,7 @@ from config.settings import settings
 from services.news_service import NewsService
 from services.x_service import ApifyConfig, ApifyService, XScraper
 from utils.utils import parse_query, analyze_content, read_tweets_ids, summarize_tweets, write_tweets_ids, analyze_message
+from telethon.tl.types import User, Chat, Channel
 
 import os
 import json
@@ -31,6 +32,8 @@ class TelegramBotService:
         self.token = token
         # Telethon客户端
         self.telethon_client = None
+        # 存储应用实例
+        self.application = None
         # 转发配置文件路径
         self.config_file = "./forward_configs.json"
         # 转发配置列表
@@ -456,6 +459,173 @@ class TelegramBotService:
                 self.telethon_client = None
             return None
 
+    # 重启bot后自动从forward_configs中恢复监听列表
+    async def restore_message_handlers(self):
+        """恢复所有已保存的转发配置的消息处理器"""
+        try:
+            # 初始化Telethon客户端
+            if not self.telethon_client or not self.telethon_client.is_connected():
+                client = await self.initialize_telethon_client()
+                if not client:
+                    logger.error('恢复消息处理器失败：Telethon客户端初始化失败')
+                    return
+                self.telethon_client = client
+            
+            # 清空旧处理器
+            await self.telethon_client.disconnect()
+            await self.telethon_client.connect()
+            
+            restored_count = 0
+            for config in self.forward_configs:
+                try:
+                    source_chat = config['source_chat']
+                    # 添加实体验证
+                    try:
+                        entity = await self.telethon_client.get_entity(source_chat)
+                        logger.info(f"群组实体验证成功: ID={entity.id} Title={entity.title}")
+                    except Exception as e:
+                        logger.error(f"群组实体验证失败: {source_chat} 错误: {e}")
+                        continue
+                    target_chat = config['target_chat']
+                    group_name = config['group_name']
+                    config_id = config['id']
+                    
+                    # 创建新处理器前断开旧连接
+                    if self.message_handlers.get(config['id']):
+                        self.message_handlers[config['id']].disconnect()
+                    
+                    # 使用通用方法创建消息处理器
+                    forward_handler = self.create_forward_handler(
+                        client=self.telethon_client,
+                        source_chat=source_chat,
+                        target_chat=target_chat,
+                        group_name=group_name,
+                        bot=self.application.bot
+                    )
+                    
+                    # 保存处理器引用
+                    self.message_handlers[config_id] = forward_handler
+                    restored_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"恢复消息处理器失败 (配置ID: {config.get('id', 'unknown')}): {e}")
+            
+            logger.info(f"成功恢复 {restored_count}/{len(self.forward_configs)} 个消息处理器")
+            # 添加连接状态检查（调试用）
+            logger.info(f"当前客户端连接状态: {self.telethon_client.is_connected()}")
+            logger.info(f"活跃事件处理器数量: {len(self.telethon_client.list_event_handlers())}")
+            
+        except Exception as e:
+            logger.error(f"恢复消息处理器过程中出错: {e}")
+
+    # 创建消息转发处理器以便在forward_new和restore_message_handlers中复用
+    def create_forward_handler(self, client, source_chat, target_chat, group_name, bot=None):
+        """创建消息转发处理器函数"""
+        @client.on(events.NewMessage(chats=source_chat))
+        async def forward_handler(event):
+            """处理新消息并转发"""
+            try:
+                # 获取消息内容
+                message = event.message
+                
+                # 记录所有收到的消息，包括消息类型
+                msg_type = "未知类型"
+                if message.text:
+                    msg_type = "文本消息"
+                elif message.media:
+                    msg_type = "媒体消息"
+                elif message.sticker:
+                    msg_type = "贴纸"
+                elif message.document:
+                    msg_type = "文档"
+                elif message.voice:
+                    msg_type = "语音消息"
+                elif message.video:
+                    msg_type = "视频"
+                elif message.video_note:
+                    msg_type = "视频笔记"
+                elif message.gif:
+                    msg_type = "GIF"
+                
+                logger.info(f"收到来自 {source_chat} ({group_name}) 的新消息: ID={message.id}, 类型={msg_type}")
+                
+                if message.text:
+                    # 先记录原始消息，确保我们看到了所有消息
+                    logger.info(f"消息ID: {message.id} 消息内容: {message.text[:100]}{'...' if len(message.text) > 100 else ''}")
+                    
+                    # 使用异步但不等待的方式进行消息分析
+                    asyncio.create_task(self._process_message(message, source_chat, target_chat, group_name, bot))
+        
+            except Exception as e:
+                logger.error(f"Error forwarding message via Telethon: {e}")
+                
+        return forward_handler
+    
+    async def _process_message(self, message, source_chat, target_chat, group_name, bot=None):
+        """分离消息处理逻辑，避免阻塞主事件处理器"""
+        try:
+            if message.text:
+                analysis = await analyze_message(message=message.text)
+                logger.info(f"消息ID: {message.id}，分析结果: {analysis}")
+                
+                if not isinstance(analysis, dict) or not analysis.get('is_illegal_comment', False):
+                    return
+                
+                # 获取发送者信息
+                sender_info = "未知用户"
+                if message.sender:
+                    sender_id = message.sender.id
+                    if message.sender.username:
+                        sender_info = f"@{message.sender.username} (<a href=\"https://t.me/{message.sender.username}\">用户链接</a>)"
+                    elif message.sender.first_name:
+                        sender_name = message.sender.first_name
+                        if message.sender.last_name:
+                            sender_name += f" {message.sender.last_name}"
+                        sender_info = f"{sender_name} (<a href=\"tg://user?id={sender_id}\">用户链接</a>)"
+
+                text = f"""⚠️ 来自 \"{group_name}\" 的非法消息:
+                \n发送者：\n{sender_info}
+                \n发送时间：\n{message.date.strftime('%Y-%m-%d %H:%M:%S')}
+                \n原因：\n{analysis.get('reason', '该消息表达了非法内容')}
+                \n原文：\n{message.text}"""
+                
+                # 使用提供的bot或context.bot发送消息
+                message_bot = bot if bot else self.application.bot
+                await message_bot.send_message(
+                    chat_id=target_chat,
+                    text=text,
+                    parse_mode=ParseMode.HTML
+                )
+            
+                # 如果有媒体内容，也可以处理
+                if message.media:
+                    # 下载媒体文件
+                    file_path = await message.download_media("./temp/")
+                    if file_path:
+                        try:
+                            # 根据媒体类型发送，也可以添加其他类型
+                            if message.photo:
+                                with open(file_path, 'rb') as photo:
+                                    await message_bot.send_photo(
+                                        chat_id=target_chat,
+                                        photo=photo,
+                                        caption=f"📷 来自 \"{group_name}\" 的图片 | {message.text if message.text else ''}"
+                                    )
+                        except Exception as e:
+                            logger.error(f"Error sending media: {e}")
+                        finally:
+                            # 确保在任何情况下都尝试删除临时文件
+                            try:
+                                if os.path.exists(file_path):
+                                    os.remove(file_path)
+                            except Exception as e:
+                                logger.error(f"Error removing temporary file {file_path}: {e}")
+        
+                logger.info(f"Message forwarded from {source_chat} ({group_name}) to {target_chat}")
+    
+        except Exception as e:
+            logger.error(f"Error processing message in _process_message: {e}")
+
     async def forward_new(self, update: Update, context: CallbackContext) -> None:
         """设置转发新消息"""
         if not context.args or len(context.args) < 1:
@@ -503,6 +673,18 @@ class TelegramBotService:
                         try:
                             entity = await client.get_entity(username)
                             source_chat = entity.id
+                            if isinstance(entity, Channel):
+                                # 超级群组/频道ID需要加上-100前缀
+                                source_chat = -1000000000000 - entity.id
+                                logger.info(f"将频道ID {entity.id} 转换为客户端格式: {source_chat}")
+                            elif isinstance(entity, Chat):
+                                # 普通群组ID需要加上负号
+                                source_chat = -entity.id
+                                logger.info(f"将群组ID {entity.id} 转换为客户端格式: {source_chat}")
+                            else:
+                                # 用户或其他类型实体保持原样
+                                source_chat = entity.id
+                                logger.info(f"使用原始实体ID: {source_chat}")
                             group_name = getattr(entity, 'title', str(source_chat))
                             
                             # 尝试加入公开群组
@@ -594,78 +776,13 @@ class TelegramBotService:
             # 创建唯一标识符
             config_id = f"{source_chat}_{target_chat}"
             
-            # 设置消息处理器
-            @client.on(events.NewMessage(chats=source_chat))
-            async def forward_handler(event):
-                """处理新消息并转发"""
-                try:
-                    # 获取消息内容
-                    message = event.message
-                    
-                    # 记录所有收到的消息
-                    logger.info(f"收到来自 {source_chat} ({group_name}) 的新消息: {message.id}")
-                    
-                    if message.text:
-                        analysis = await analyze_message(message=message.text)
-                        if not analysis.get('is_illegal_comment', False):
-                            logger.info(f"消息内容无风险，消息内容: {message.text}，分析结果: {analysis}")
-                            return
-                        
-                        logger.info(f"消息内容表达了非法内容，消息内容: {message.text}，分析结果: {analysis}")
-                        
-                        # 获取发送者信息
-                        sender_info = "未知用户"
-                        if message.sender:
-                            sender_id = message.sender.id
-                            if message.sender.username:
-                                sender_info = f"@{message.sender.username} ([用户链接](https://t.me/{message.sender.username}))"
-                            elif message.sender.first_name:
-                                sender_name = message.sender.first_name
-                                if message.sender.last_name:
-                                    sender_name += f" {message.sender.last_name}"
-                                sender_info = f"{sender_name} ([用户链接](tg://user?id={sender_id}))"
-
-                        text = f"""⚠️ 来自 \"{group_name}\" 的非法消息:
-                        \n发送者：\n{sender_info}
-                        \n发送时间：\n{message.date.strftime('%Y-%m-%d %H:%M:%S')}
-                        \n原因：\n{analysis.get('reason', '该消息表达了非法内容')}
-                        \n原文：\n{message.text}"""
-                        
-                        await context.bot.send_message(
-                            chat_id=target_chat,
-                            text=text,
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                    
-                        # 如果有媒体内容，也可以处理
-                        if message.media:
-                            # 下载媒体文件
-                            file_path = await message.download_media("./temp/")
-                            if file_path:
-                                try:
-                                    # 根据媒体类型发送，也可以添加其他类型
-                                    if message.photo:
-                                        with open(file_path, 'rb') as photo:
-                                            await context.bot.send_photo(
-                                                chat_id=target_chat,
-                                                photo=photo,
-                                                caption=f"📷 来自 \"{group_name}\" 的图片 | {message.text if message.text else ''}"
-                                            )
-                                except Exception as e:
-                                    logger.error(f"Error sending media: {e}")
-                                finally:
-                                    # 确保在任何情况下都尝试删除临时文件
-                                    try:
-                                        if os.path.exists(file_path):
-                                            os.remove(file_path)
-                                    except Exception as e:
-                                        logger.error(f"Error removing temporary file {file_path}: {e}")
-                            
-                
-                        logger.info(f"Message forwarded from {source_chat} ({group_name}) to {target_chat}")
-            
-                except Exception as e:
-                    logger.error(f"Error forwarding message via Telethon: {e}")
+            # 使用通用方法创建消息处理器
+            forward_handler = self.create_forward_handler(
+                client=client,
+                source_chat=source_chat,
+                target_chat=target_chat,
+                group_name=group_name
+            )
             
             # 检查是否已经在监听该群组
             is_listening = False
@@ -911,21 +1028,30 @@ class TelegramBotService:
 
     async def list_forwards(self, update: Update, context: CallbackContext) -> None:
         """列出当前正在监听的群组"""
-        target_chat = update.effective_chat.id
-        
+        if not self.forward_configs:
+            await update.message.reply_text('⚠️ 当前没有任何转发配置')
+            return
+                
         # 过滤出当前聊天的转发配置
+        target_chat = update.effective_chat.id
         configs = [config for config in self.forward_configs if config['target_chat'] == target_chat]
         
         if not configs:
             await update.message.reply_text('📋 当前没有正在监听的群组')
             return
         
-        message = "📋 当前正在监听的群组列表：\n\n"
+        message = "📋 当前转发配置：\n\n"
         for i, config in enumerate(configs, 1):
-            message += f"{i}. 群组：{config['group_name']}\n   ID：{config['source_chat']}\n\n"
+            source_chat = config['source_chat']
+            group_name = config['group_name']
+            config_id = config['id']
+            
+            # 检查处理器是否存在
+            handler_status = "✅ 正常" if config_id in self.message_handlers else "❌ 未注册"
+            
+            message += f"{i}. 来源：{group_name}\n   ID：{source_chat}\n   状态：{handler_status}\n\n"
         
         message += "要停止监听某个群组，请使用：\n/stop_forward [群组ID]"
-        
         await update.message.reply_text(message)
         logger.info(f"Listed {len(configs)} forwarding configurations for chat {target_chat}")
 
@@ -1008,11 +1134,19 @@ class TelegramBotService:
             logger.error(f"Error stopping message forwarding: {e}")
             await update.message.reply_text(f'❌ 停止消息转发时出错: {str(e)}')
     
+    async def post_init_callback(self, application: Application) -> None:
+        """在应用程序初始化后调用，用于恢复消息处理器"""
+        if self.forward_configs:
+            logger.info(f"应用程序已初始化，开始恢复消息处理器...")
+            await self.restore_message_handlers()
+    
     def run(self, shutdown_event=None):
         """Start the Telegram bot."""
         try:
             # 创建应用实例
             application = Application.builder().token(self.token).concurrent_updates(True).build()
+            # 保存应用实例
+            self.application = application
 
             if self.bot_type == 'query':
                 # Add query command handlers
@@ -1030,9 +1164,15 @@ class TelegramBotService:
                 application.add_handler(CommandHandler("list_forwards", self.list_forwards))
                 application.add_handler(CommandHandler("stop_forward", self.stop_forward))
     
+                # 启动时恢复所有已保存的转发配置的消息处理器
+                if self.forward_configs:
+                    logger.info(f"正在准备恢复 {len(self.forward_configs)} 个已保存的转发配置...")
+                    # 使用post_init钩子在应用程序初始化后恢复消息处理器
+                    application.post_init = self.post_init_callback
+            
             logger.info(f"Starting {self.bot_type.upper()} Telegram bot...")
             
-                        # 如果提供了shutdown_event，使用它来控制机器人运行
+            # 如果提供了shutdown_event，使用它来控制机器人运行
             if shutdown_event:
                 application.run_polling(stop_signals=None, close_loop=False)
                 while not shutdown_event.is_set():
