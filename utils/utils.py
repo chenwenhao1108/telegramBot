@@ -361,7 +361,7 @@ def write_tweets_ids(ids):
 async def analyze_message(message: str) -> dict:
     """Analyze telegram group message"""
     prompt = f"""下面是一条telegram群组消息，请分析这条消息表达的含义，判断该条消息是否符合下面三种情况之一：
-    1. 是否是有关于**中国领导人**的负面评论（如关于习近平或其他中国领导人的评论）
+    1. 是否是有关于**中国领导人**的负面新闻（如关于习近平或其他中国领导人的**新闻报道**，如果只是用户评论而非新闻，则不符合）
     2. 是否表示要进行非法活动（如：我要炸车站，我要挂横幅，我要去抗议）
     3. 他国政要涉及中国的观点和新政策（如：赖清德涉华观点）
     
@@ -380,5 +380,5 @@ async def analyze_message(message: str) -> dict:
     
     return openai_service.infer(
         user_prompt=prompt,
-        system_prompt="你是一个专业的舆情与非法信息监控师，能够准确的分析消息内容，判断该消息是否是舆情风险信息。"
+        system_prompt="你是一个专业的舆情与非法信息监控专家，能够准确的分析消息内容，判断该消息是否是舆情风险信息。"
     )
