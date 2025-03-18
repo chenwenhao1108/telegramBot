@@ -3,7 +3,8 @@ from datetime import datetime
 from pprint import pprint
 from typing import Optional
 from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes
+from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, CallbackContext, ContextTypes, TypeHandler
 import telegram
 from config.settings import settings
 from services.news_service import NewsService
@@ -12,6 +13,7 @@ from utils.utils import parse_query, analyze_content, read_tweets_ids, summarize
 
 import os
 import json
+import time
 
 # 导入Telethon相关库
 from telethon import TelegramClient, events
@@ -589,12 +591,6 @@ class TelegramBotService:
                     await update.message.reply_text(f'❌ 无法获取群组信息: {str(e)}')
                     return
             
-            # 检查是否已经在监听该群组
-            for config in self.forward_configs:
-                if config['source_chat'] == source_chat and config['target_chat'] == target_chat:
-                    await update.message.reply_text(f'⚠️ 已经在监听群组 "{group_name}"')
-                    return
-            
             # 创建唯一标识符
             config_id = f"{source_chat}_{target_chat}"
             
@@ -606,20 +602,39 @@ class TelegramBotService:
                     # 获取消息内容
                     message = event.message
                     
-                    # 通过机器人API发送到目标群组
+                    # 记录所有收到的消息
+                    logger.info(f"收到来自 {source_chat} ({group_name}) 的新消息: {message.id}")
+                    
                     if message.text:
                         analysis = await analyze_message(message=message.text)
-                        
                         if not analysis.get('is_illegal_comment', False):
                             logger.info(f"消息内容无风险，消息内容: {message.text}，分析结果: {analysis}")
                             return
                         
+                        logger.info(f"消息内容表达了非法内容，消息内容: {message.text}，分析结果: {analysis}")
+                        
+                        # 获取发送者信息
+                        sender_info = "未知用户"
+                        if message.sender:
+                            sender_id = message.sender.id
+                            if message.sender.username:
+                                sender_info = f"@{message.sender.username} ([用户链接](https://t.me/{message.sender.username}))"
+                            elif message.sender.first_name:
+                                sender_name = message.sender.first_name
+                                if message.sender.last_name:
+                                    sender_name += f" {message.sender.last_name}"
+                                sender_info = f"{sender_name} ([用户链接](tg://user?id={sender_id}))"
+
                         text = f"""⚠️ 来自 \"{group_name}\" 的非法消息:
-                        \n\n原因：\n{analysis.get('reason', '该消息表达了非法内容')}
-                        \n\n原文：\n{message.text}"""
+                        \n发送者：\n{sender_info}
+                        \n发送时间：\n{message.date.strftime('%Y-%m-%d %H:%M:%S')}
+                        \n原因：\n{analysis.get('reason', '该消息表达了非法内容')}
+                        \n原文：\n{message.text}"""
+                        
                         await context.bot.send_message(
                             chat_id=target_chat,
-                            text=text
+                            text=text,
+                            parse_mode=ParseMode.MARKDOWN
                         )
                     
                     # 如果有媒体内容，也可以处理
@@ -652,18 +667,26 @@ class TelegramBotService:
                 except Exception as e:
                     logger.error(f"Error forwarding message via Telethon: {e}")
             
-            # 保存转发配置
-            config = {
-                'id': config_id,
-                'source_chat': source_chat,
-                'target_chat': target_chat,
-                'group_name': group_name
-            }
-            self.forward_configs.append(config)
+            # 检查是否已经在监听该群组
+            is_listening = False
+            for config in self.forward_configs:
+                if config['source_chat'] == source_chat and config['target_chat'] == target_chat:
+                    is_listening = True
+                    break
+
+            if not is_listening:
+                # 保存转发配置
+                config = {
+                    'id': config_id,
+                    'source_chat': source_chat,
+                    'target_chat': target_chat,
+                    'group_name': group_name
+                }
+                self.forward_configs.append(config)
+                # 在成功设置转发后，保存配置
+                self.save_forward_configs()
             self.message_handlers[config_id] = forward_handler
             
-            # 在成功设置转发后，保存配置
-            self.save_forward_configs()
             await update.message.reply_text(f'✅ 已设置转发 "{group_name}" 的新消息到当前群组')
             logger.info(f"Message forwarding set up from {source_chat} ({group_name}) to {target_chat}")
             
