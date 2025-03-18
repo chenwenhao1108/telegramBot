@@ -637,32 +637,32 @@ class TelegramBotService:
                             parse_mode=ParseMode.MARKDOWN
                         )
                     
-                    # 如果有媒体内容，也可以处理
-                    if message.media:
-                        # 下载媒体文件
-                        file_path = await message.download_media("./temp/")
-                        if file_path:
-                            try:
-                                # 根据媒体类型发送，也可以添加其他类型
-                                if message.photo:
-                                    with open(file_path, 'rb') as photo:
-                                        await context.bot.send_photo(
-                                            chat_id=target_chat,
-                                            photo=photo,
-                                            caption=f"📷 来自 \"{group_name}\" 的图片 | {message.text if message.text else ''}"
-                                        )
-                            except Exception as e:
-                                logger.error(f"Error sending media: {e}")
-                            finally:
-                                # 确保在任何情况下都尝试删除临时文件
+                        # 如果有媒体内容，也可以处理
+                        if message.media:
+                            # 下载媒体文件
+                            file_path = await message.download_media("./temp/")
+                            if file_path:
                                 try:
-                                    if os.path.exists(file_path):
-                                        os.remove(file_path)
+                                    # 根据媒体类型发送，也可以添加其他类型
+                                    if message.photo:
+                                        with open(file_path, 'rb') as photo:
+                                            await context.bot.send_photo(
+                                                chat_id=target_chat,
+                                                photo=photo,
+                                                caption=f"📷 来自 \"{group_name}\" 的图片 | {message.text if message.text else ''}"
+                                            )
                                 except Exception as e:
-                                    logger.error(f"Error removing temporary file {file_path}: {e}")
-                        
-            
-                    logger.info(f"Message forwarded from {source_chat} ({group_name}) to {target_chat}")
+                                    logger.error(f"Error sending media: {e}")
+                                finally:
+                                    # 确保在任何情况下都尝试删除临时文件
+                                    try:
+                                        if os.path.exists(file_path):
+                                            os.remove(file_path)
+                                    except Exception as e:
+                                        logger.error(f"Error removing temporary file {file_path}: {e}")
+                            
+                
+                        logger.info(f"Message forwarded from {source_chat} ({group_name}) to {target_chat}")
             
                 except Exception as e:
                     logger.error(f"Error forwarding message via Telethon: {e}")
