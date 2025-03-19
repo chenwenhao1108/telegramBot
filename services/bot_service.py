@@ -15,6 +15,7 @@ from telethon.tl.types import User, Chat, Channel
 import os
 import json
 import time
+import re
 
 # 导入Telethon相关库
 from telethon import TelegramClient, events
@@ -591,11 +592,38 @@ class TelegramBotService:
                 
                 # 使用提供的bot或context.bot发送消息
                 message_bot = bot if bot else self.application.bot
-                await message_bot.send_message(
-                    chat_id=target_chat,
-                    text=text,
-                    parse_mode=ParseMode.HTML
-                )
+                current_chat_id = target_chat
+                try:
+                    await message_bot.send_message(
+                        chat_id=current_chat_id,
+                        text=text,
+                        parse_mode=ParseMode.HTML
+                    )
+                except telegram.error.BadRequest as e:
+                    # 检查是否是群组迁移错误
+                    if "Group migrated to supergroup" in str(e):
+                        # 提取新的超级群组ID
+                        new_id_match = re.search(r"New chat id: (-\d+)", str(e))
+                        if new_id_match:
+                            current_chat_id = new_id_match.group(1)
+                            logger.info(f"群组已迁移到超级群组。旧ID: {target_chat}, 新ID: {current_chat_id}")
+                            
+                            # 更新配置中的目标群组ID
+                            self._update_migrated_chat_id(target_chat, current_chat_id)
+                            
+                            # 使用新ID重试发送消息
+                            await message_bot.send_message(
+                                chat_id=current_chat_id,
+                                text=text,
+                                parse_mode=ParseMode.HTML
+                            )
+                        else:
+                            logger.error(f"无法从错误消息中提取新的群组ID: {e}")
+                    else:
+                        # 其他BadRequest错误
+                        logger.error(f"发送消息时出错: {e}")
+                except Exception as e:
+                    logger.error(f"发送消息时出错: {e}")
             
                 # 如果有媒体内容，也可以处理
                 if message.media:
@@ -607,7 +635,7 @@ class TelegramBotService:
                             if message.photo:
                                 with open(file_path, 'rb') as photo:
                                     await message_bot.send_photo(
-                                        chat_id=target_chat,
+                                        chat_id=current_chat_id,
                                         photo=photo,
                                         caption=f"📷 来自 \"{group_name}\" 的图片 | {message.text if message.text else ''}"
                                     )
@@ -625,6 +653,44 @@ class TelegramBotService:
     
         except Exception as e:
             logger.error(f"Error processing message in _process_message: {e}")
+            
+    def _update_migrated_chat_id(self, old_chat_id, new_chat_id):
+        """更新已迁移群组的ID"""
+        try:
+            # 更新内存中的转发配置
+            updated = False
+            for config in self.forward_configs:
+                # 检查源群组和目标群组
+                if str(config['source_chat']) == str(old_chat_id):
+                    config['source_chat'] = new_chat_id
+                    logger.info(f"已更新源群组ID: {old_chat_id} -> {new_chat_id}")
+                    updated = True
+                
+                if str(config['target_chat']) == str(old_chat_id):
+                    config['target_chat'] = new_chat_id
+                    logger.info(f"已更新目标群组ID: {old_chat_id} -> {new_chat_id}")
+                    updated = True
+                
+                # 更新配置ID
+                if updated:
+                    old_id = config['id']
+                    config['id'] = f"{config['source_chat']}_{config['target_chat']}"
+                    logger.info(f"已更新配置ID: {old_id} -> {config['id']}")
+                    
+                    # 更新消息处理器字典中的键
+                    if old_id in self.message_handlers:
+                        self.message_handlers[config['id']] = self.message_handlers.pop(old_id)
+            
+            # 如果有更新，保存到文件
+            if updated:
+                self.save_forward_configs()
+                logger.info("已保存更新后的转发配置")
+                
+                # 重新初始化消息处理器
+                asyncio.create_task(self.restore_message_handlers())
+                
+        except Exception as e:
+            logger.error(f"更新迁移群组ID时出错: {e}")
 
     async def forward_new(self, update: Update, context: CallbackContext) -> None:
         """设置转发新消息"""
@@ -1034,6 +1100,7 @@ class TelegramBotService:
                 
         # 过滤出当前聊天的转发配置
         target_chat = update.effective_chat.id
+        logger.info(f"List forwards for chat {target_chat}")
         configs = [config for config in self.forward_configs if config['target_chat'] == target_chat]
         
         if not configs:
