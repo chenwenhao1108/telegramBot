@@ -382,3 +382,32 @@ async def analyze_message(message: str) -> dict:
         user_prompt=prompt,
         system_prompt="你是一个专业的舆情与非法信息监控专家，能够准确的分析消息内容，判断该消息是否是舆情风险信息。"
     )
+    
+async def analyze_scheduled_messages(messages: list) -> str:
+    """Analyze scheduled telegram group messages"""
+    prompt = f"""下面是一组telegram群组在半小时内的消息，请分析这组消息表达的含义，总结在这半小时内该群组的主要讨论内容，并从负面信息和非法行为预警两个维度进行归纳。最终以字符串形式返回你的总结归纳结果。
+    其中负面信息的含义是：有关于**中国领导人**的负面评价（如关于习近平或其他中国领导人的负面评价）
+    非法行为的含义是：用户表示计划在**中国境内**进行非法活动（如：我要炸车站，我要挂横幅，我要去抗议，如果是在除了中国境内的地方，则不符合）
+    
+    请最终以这样的字符串格式返回你的总结归纳结果：
+    "内容总结：
+    该群在近半小时内主要讨论了XXXX
+    其中包含的负面信息主要有：
+    XXXX
+    其中包含的非法行为主要有：
+    XXXX"
+    如果不包含任何负面信息和非法行为，则返回：
+    "内容总结：
+    该群在近半小时内主要讨论了XXXX
+    其中未检测到负面信息或非法行为。"
+
+    Telegram group messages：
+    {messages}
+    """
+    
+    openai_service = OpenAIService()
+    
+    return openai_service.infer(
+        user_prompt=prompt,
+        system_prompt="你是一个专业的舆情与非法信息监控专家，能够准确的分析多条聊天记录，并进行总结和归纳。"
+    )
