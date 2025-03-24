@@ -488,9 +488,35 @@ class TelegramBotService:
                     try:
                         entity = await self.telethon_client.get_entity(source_chat)
                         logger.info(f"群组实体验证成功: ID={entity.id} Title={entity.title}")
-                    except Exception as e:
-                        logger.error(f"群组实体验证失败: {source_chat} 错误: {e}")
-                        continue
+                    except Exception as e1:
+                        logger.error(f"群组实体验证失败: {source_chat} 错误: {e1}，尝试其他方法...")
+                        # 如果是数字ID，尝试不同的格式
+                        if isinstance(source_chat, int) or (isinstance(source_chat, str) and source_chat.lstrip('-').isdigit()):
+                            source_id = int(source_chat)
+                            
+                            # 尝试不同的ID格式
+                            possible_ids = [
+                                source_id,  # 原始ID
+                                -source_id if source_id > 0 else abs(source_id),  # 正负转换
+                                int(f"-100{abs(source_id)}") if not str(source_id).startswith('-100') else source_id,  # 添加-100前缀
+                                int(str(source_id).replace('-100', '')) if str(source_id).startswith('-100') else source_id  # 移除-100前缀
+                            ]
+                            
+                            for possible_id in possible_ids:
+                                try:
+                                    entity = await self.telethon_client.get_entity(possible_id)
+                                    # 如果成功，更新配置中的ID
+                                    if entity:
+                                        logger.info(f"使用替代ID {possible_id} 成功获取实体")
+                                        config['source_chat'] = possible_id
+                                        source_chat = possible_id
+                                        break
+                                except Exception:
+                                    continue
+                            else:
+                                # 所有尝试都失败
+                                logger.error(f"无法使用任何ID格式获取实体: {source_chat}")
+                                continue
                     target_chat = config['target_chat']
                     group_name = config['group_name']
                     config_id = config['id']
@@ -514,6 +540,8 @@ class TelegramBotService:
                     
                 except Exception as e:
                     logger.error(f"恢复消息处理器失败 (配置ID: {config.get('id', 'unknown')}): {e}")
+                finally:
+                    asyncio.sleep(0.5)  # 短暂延迟以避免过度请求
             
             logger.info(f"成功恢复 {restored_count}/{len(self.forward_configs)} 个消息处理器")
             # 添加连接状态检查（调试用）
@@ -551,20 +579,21 @@ class TelegramBotService:
                     msg_type = "视频笔记"
                 elif message.gif:
                     msg_type = "GIF"
-                
-                logger.info(f"收到来自 {source_chat} ({group_name}) 的新消息: ID={message.id}, 类型={msg_type}")
+
+                # 先记录原始消息，确保我们看到了所有消息
+                logger.info(f"消息ID: {message.id} 消息来源：{source_chat} ({group_name}) 消息类型：{msg_type} 消息内容: {message.text[:100] if message.text else '非文本消息'}{'...' if (message.text and len(message.text) > 100) else ''}")
                 
                 # 创建唯一标识符
                 config_id = f"{source_chat}_{target_chat}"
                 
                 if message.text:
-                    # 先记录原始消息，确保我们看到了所有消息
-                    logger.info(f"消息ID: {message.id} 消息内容: {message.text[:100]}{'...' if len(message.text) > 100 else ''}")
                     
                     if not self.group_messages.get(config_id):
-                        self.group_messages[config_id] = []
+                        self.group_messages[config_id] = {}
+                        self.group_messages[config_id]['messages'] = []
+                        self.group_messages[config_id]['group_name'] = group_name
                     # 每次来新消息都储存到group_messages用于定时分析
-                    self.group_messages[config_id].append(message.text)
+                    self.group_messages[config_id]['messages'].append(message.text)
                     
                     # 使用异步但不等待的方式进行消息分析
                     asyncio.create_task(self._process_message(message, source_chat, target_chat, group_name, bot))
@@ -882,15 +911,17 @@ class TelegramBotService:
                 self.save_forward_configs()
             self.message_handlers[config_id] = forward_handler
 
-            new_job = context.job_queue.run_repeating(
-                    callback=self.send_scheduled_message_analysis,
-                    interval=1800, # 每半小时分析一次
-                    first=1800,
-                    data={'target_chat': target_chat, 'source_chat': source_chat, 'group_name': group_name, 'config_id': config_id},
-                    chat_id=target_chat
-                )
-            # 保存任务引用
-            self.scheduled_jobs[config_id] = new_job
+            if not target_chat in self.scheduled_jobs:
+                # 创建定时任务
+                new_job = context.job_queue.run_repeating(
+                        callback=self.send_scheduled_message_analysis,
+                        interval=1800, # 每半小时分析一次
+                        first=1800,
+                        data={'target_chat': target_chat, 'source_chat': source_chat, 'group_name': group_name, 'config_id': config_id},
+                        chat_id=target_chat
+                    )
+                # 保存任务引用
+                self.scheduled_jobs[target_chat] = new_job
             
             await update.message.reply_text(f'✅ 已设置转发 "{group_name}" 的新消息到当前群组')
             logger.info(f"Message forwarding set up from {source_chat} ({group_name}) to {target_chat}")
@@ -1172,15 +1203,16 @@ class TelegramBotService:
             # 移除所有处理器和配置
             for config in configs_to_remove:
                 config_id = config['id']
+                target_chat = config['target_chat']
                 if config_id in self.message_handlers:
                     # 移除消息处理器
                     self.telethon_client.remove_event_handler(self.message_handlers[config_id])
                     del self.message_handlers[config_id]
                 
                 # 移除定时任务
-                if config_id in self.scheduled_jobs:
-                    self.scheduled_jobs[config_id].schedule_removal()
-                    del self.scheduled_jobs[config_id]
+                if target_chat in self.scheduled_jobs:
+                    self.scheduled_jobs[target_chat].schedule_removal()
+                    del self.scheduled_jobs[target_chat]
                     logger.info(f"Removed scheduled message analysis for {config['group_name']}")
                 
                 # 从配置列表中移除
@@ -1188,6 +1220,8 @@ class TelegramBotService:
 
             # 保存配置
             self.save_forward_configs()
+            # 删除消息记录
+            self.group_messages = {}
             await update.message.reply_text(f'✅ 已停止所有群组的消息转发（共 {len(configs_to_remove)} 个）')
             logger.info(f"Stopped all {len(configs_to_remove)} message forwardings for chat {target_chat}")
             return
@@ -1217,17 +1251,23 @@ class TelegramBotService:
             if config_id in self.message_handlers:
                 self.telethon_client.remove_event_handler(self.message_handlers[config_id])
                 del self.message_handlers[config_id]
-                
-            # 移除定时任务
-            if config_id in self.scheduled_jobs:
-                self.scheduled_jobs[config_id].schedule_removal()
-                del self.scheduled_jobs[config_id]
-                logger.info(f"Removed scheduled message analysis for {config_to_remove['group_name']}")
+            
+            # 移除消息记录
+            if config_id in self.group_messages:
+                del self.group_messages[config_id]
             
             # 从配置列表中移除
             self.forward_configs.remove(config_to_remove)
             
             self.save_forward_configs()
+            
+            # 如果目标群组的监听任务为0则移除定时任务
+            if len([config for config in self.forward_configs if config['target_chat'] == target_chat]) == 0:
+                if target_chat in self.scheduled_jobs:
+                    self.scheduled_jobs[target_chat].schedule_removal()
+                    del self.scheduled_jobs[target_chat]
+                    logger.info(f"Removed scheduled message analysis for {config_to_remove['group_name']}")
+            
             await update.message.reply_text(f'✅ 已停止转发 "{config_to_remove["group_name"]}" 的消息')
             logger.info(f"Stopped message forwarding from {config_to_remove['source_chat']} to {target_chat}")
             
@@ -1245,16 +1285,22 @@ class TelegramBotService:
         if application.job_queue:
             logger.info("正在设置定时消息分析任务...")
             
-            # 为每个配置创建定时任务
+            # 为每个target_chat创建定时任务
             for config in self.forward_configs:
                 source_chat = config['source_chat']
                 target_chat = config['target_chat']
                 group_name = config['group_name']
                 config_id = config['id']
                 
+                # 如果target_chat已经有任务了，跳过
+                if target_chat in self.scheduled_jobs:
+                    continue
+                
                 # 确保群组消息字典已初始化
                 if config_id not in self.group_messages:
-                    self.group_messages[config_id] = []
+                    self.group_messages[config_id] = {}
+                    self.group_messages[config_id]['messages'] = []
+                    self.group_messages[config_id]['group_name'] = group_name
                     
                 new_job = application.job_queue.run_repeating(
                     callback=self.send_scheduled_message_analysis,
@@ -1264,7 +1310,7 @@ class TelegramBotService:
                     chat_id=target_chat
                 )
                 # 保存任务引用
-                self.scheduled_jobs[config_id] = new_job
+                self.scheduled_jobs[target_chat] = new_job
                 logger.info(f"Added scheduled message analysis for {group_name} to chat {target_chat}")
         else:
             logger.warning("应用程序的 job_queue 未初始化，无法设置定时消息分析任务")
@@ -1273,40 +1319,45 @@ class TelegramBotService:
         """定时分析消息并发送报告"""
         job_data = context.job.data
         target_chat = job_data.get('target_chat')
-        source_chat = job_data.get('source_chat')
-        group_name = job_data.get('group_name')
-        config_id = job_data.get('config_id')
-        
-        messages = self.group_messages.get(config_id, [])
+  
+        messages = {} # {sc: {group_name: str, messages: [str]}}
+        for config_id in self.group_messages:
+            sc = config_id.split('_')[0]
+            tc = config_id.split('_')[1]
+            if str(tc) == str(target_chat):
+                gn = self.group_messages[config_id]['group_name']
+                if not messages.get(sc, None):
+                    logger.info(f"初始化消息列表")
+                    messages[sc] = {}
+                    messages[sc]['messages'] = []
+                    messages[sc]['group_name'] = gn
+                messages[sc]['messages'].extend(self.group_messages[config_id]['messages'])
+                # 清空对应消息列表
+                self.group_messages[config_id]['messages'] = []
         
         # 获取当前UTC时间并转换为北京时间
         current_time_utc = datetime.now()
         beijing_time = current_time_utc + timedelta(hours=8)
         
-        message_length = len(messages)
+        message_length = len([item for sc in messages for item in messages[sc]['messages']])
+        logger.info(f"开始分析半小时内的消息，消息：{messages} 消息长度：{message_length}")
         if message_length == 0:
             await context.bot.send_message(
                 chat_id=target_chat,
-                text=f"⏰ 半小时消息分析\n\n群组：{group_name}\n\n时间：{beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)\n\n最近半小时 {group_name} 未收到任何消息，跳过分析"
+                text=f"⏰ 半小时消息分析\n\n时间：{beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)\n\n最近半小时未收到任何消息，跳过分析"
             )
             return
         
-        logger.info(f"开始分析 {group_name} 半小时内的消息，消息长度：{len(messages)}")
-        # 合并所有消息文本
-        message_text = '\n'.join(message for message in messages)
-        
         try:
-            analysis = await analyze_scheduled_messages(message_text)
+            analysis = (await analyze_scheduled_messages(messages.values())).replace("```", "").replace("plaintext", "") # messages.values(): [{group_name: str, messages: [str]}]
             
             await context.bot.send_message(
                 chat_id=target_chat,
-                text=f'⏰ 半小时消息分析\n\n群组：{group_name}\n\n时间：{beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)\n\n消息数量：{message_length}\n\n' + analysis
+                text=f'⏰ 半小时消息分析\n\n时间：{beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)\n\n消息数量：{message_length}\n\n' + analysis
             )
             logger.info(f"分析完成，发送报告到 {target_chat}")
         except Exception as e:
-            logger.error(f"Error analyzing scheduled messages: {e}")
-        finally:
-            self.group_messages[config_id] = []  # 清空消息列表
+            logger.error(f"Error analyzing scheduled messages: {e}")            
             
     
     def run(self, shutdown_event=None):

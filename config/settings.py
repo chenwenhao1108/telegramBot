@@ -154,7 +154,8 @@ class Settings:
     def is_valid(self) -> bool:
         """Check if all required configuration values are set."""
         return all([
-            self.telegram_token,
+            self.query_bot_token,
+            self.forward_bot_token,
             self.openai_api_key,
             self.apify_token,
             self.eventregistry_key
